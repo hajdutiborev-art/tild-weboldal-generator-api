@@ -301,16 +301,31 @@ export default async function handler(req, res) {
   return res.status(500).json({ error: "No generator output" });
 }
 
+const refinerResult = await runner.run(
+  tildPublishingRefiner,
+  [
+    ...conversationHistory,
+    {
+      role: "user",
+      content: [{ type: "input_text", text: `Finomítandó tervezet:${generatorResult.finalOutput ?? ""}` }]
+    }
+  ]
+);
+
+if (!refinerResult.finalOutput) {
+  return res.status(500).json({ error: "No refiner output" });
+}
+
 return res.status(200).json({
   elsodleges_oldaltipus: "szolgáltatásoldal",
   elsodleges_celcsoport: "teszt célcsoport",
   elsodleges_uzleti_cel: "teszt üzleti cél",
-  fo_allitas: "generator lefutott",
-  meta_title: "generator teszt",
-  meta_description: "generator teszt",
-  h1: "generator teszt",
-  rovid_hero_bevezeto: "generator lefutott",
-  teljes_oldalszoveg: String(generatorResult.finalOutput),
+  fo_allitas: "refiner lefutott",
+  meta_title: "refiner teszt",
+  meta_description: "refiner teszt",
+  h1: "refiner teszt",
+  rovid_hero_bevezeto: "refiner lefutott",
+  teljes_oldalszoveg: String(refinerResult.finalOutput),
   fo_cta: "teszt CTA",
   javasolt_belso_linkek: "teszt linkek"
 });
