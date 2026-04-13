@@ -273,19 +273,6 @@ export default async function handler(req, res) {
     if (!input_as_text || typeof input_as_text !== "string") {
       return res.status(400).json({ error: "input_as_text is required" });
     }
-return res.status(200).json({
-  elsodleges_oldaltipus: "szolgáltatásoldal",
-  elsodleges_celcsoport: "teszt célcsoport",
-  elsodleges_uzleti_cel: "teszt üzleti cél",
-  fo_allitas: "teszt fő állítás",
-  meta_title: "teszt meta title",
-  meta_description: "teszt meta description",
-  h1: "teszt h1",
-  rovid_hero_bevezeto: "teszt hero",
-  teljes_oldalszoveg: "H2 Teszt blokk\nEz egy teszt szöveg.",
-  fo_cta: "teszt CTA",
-  javasolt_belso_linkek: "teszt linkek"
-});
     const conversationHistory = [
       { role: "user", content: [{ type: "input_text", text: input_as_text }] }
     ];
