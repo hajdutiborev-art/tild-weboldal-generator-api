@@ -297,35 +297,23 @@ export default async function handler(req, res) {
 
     conversationHistory.push(...generatorResult.newItems.map((item) => item.rawItem));
 
-    const refinerResult = await runner.run(
-      tildPublishingRefiner,
-      [
-        ...conversationHistory,
-        {
-          role: "user",
-          content: [{ type: "input_text", text: `Finomítandó tervezet:${generatorResult.finalOutput ?? ""}` }]
-        }
-      ]
-    );
+    if (!generatorResult.finalOutput) {
+  return res.status(500).json({ error: "No generator output" });
+}
 
-    conversationHistory.push(...refinerResult.newItems.map((item) => item.rawItem));
-
-    const qcResult = await runner.run(
-      tildPageQc,
-      [
-        ...conversationHistory,
-        {
-          role: "user",
-          content: [{ type: "input_text", text: `Ellenőrizendő oldalváltozat:${refinerResult.finalOutput ?? ""}` }]
-        }
-      ]
-    );
-
-    if (!qcResult.finalOutput) {
-      return res.status(500).json({ error: "No final output from workflow" });
-    }
-
-    return res.status(200).json(qcResult.finalOutput);
+return res.status(200).json({
+  elsodleges_oldaltipus: "szolgáltatásoldal",
+  elsodleges_celcsoport: "teszt célcsoport",
+  elsodleges_uzleti_cel: "teszt üzleti cél",
+  fo_allitas: "generator lefutott",
+  meta_title: "generator teszt",
+  meta_description: "generator teszt",
+  h1: "generator teszt",
+  rovid_hero_bevezeto: "generator lefutott",
+  teljes_oldalszoveg: String(generatorResult.finalOutput),
+  fo_cta: "teszt CTA",
+  javasolt_belso_linkek: "teszt linkek"
+});
   } catch (error) {
     return res.status(500).json({
       error: "Workflow execution failed",
