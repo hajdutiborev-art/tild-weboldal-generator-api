@@ -387,25 +387,55 @@ export default async function handler(req, res) {
 
     const { mode = "start", input_as_text, job_id } = req.body || {};
 
-    if (mode === "start") {
-      if (!input_as_text || typeof input_as_text !== "string") {
-        return res.status(400).json({ error: "input_as_text is required" });
-      }
+   if (mode === "start") {
+  if (!input_as_text || typeof input_as_text !== "string") {
+    return res.status(400).json({ error: "input_as_text is required" });
+  }
 
-      const newJobId = crypto.randomUUID();
+  const newJobId = crypto.randomUUID();
+
+  await kvSet(`job:${newJobId}`, {
+    job_id: newJobId,
+    status: "queued",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  });
+
+  waitUntil((async () => {
+    const queued = await kvGet(`job:${newJobId}`);
+
+    await kvSet(`job:${newJobId}`, {
+      ...queued,
+      status: "processing",
+      updated_at: new Date().toISOString()
+    });
+
+    try {
+      const finalResult = await runFullWorkflow(input_as_text);
 
       await kvSet(`job:${newJobId}`, {
         job_id: newJobId,
-        status: "queued",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        status: "done",
+        created_at: queued?.created_at ?? new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        result: finalResult
       });
-
-      return res.status(200).json({
+    } catch (error) {
+      await kvSet(`job:${newJobId}`, {
         job_id: newJobId,
-        status: "queued"
+        status: "failed",
+        created_at: queued?.created_at ?? new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        error: error?.message || "Unknown error"
       });
     }
+  })());
+
+  return res.status(200).json({
+    job_id: newJobId,
+    status: "queued"
+  });
+}
 
     if (mode === "process") {
       if (!job_id || typeof job_id !== "string") {
