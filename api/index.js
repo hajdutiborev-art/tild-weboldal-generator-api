@@ -1,5 +1,6 @@
-import { Agent, Runner, withTrace, fileSearchTool } from "@openai/agents";
+import { Agent, Runner, fileSearchTool } from "@openai/agents";
 import { z } from "zod";
+import crypto from "crypto";
 
 const fileSearch = fileSearchTool([
   "vs_69dcd13b892081918bc2b58cd8da5085"
@@ -262,62 +263,216 @@ Kimeneti szerkezet:
   }
 });
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+const KV_BASE_URL = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+
+async function kvSet(key, value) {
+  const response = await fetch(`${KV_BASE_URL}/set/${encodeURIComponent(key)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(value)
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`KV set failed: ${text}`);
+  }
+}
+
+async function kvGet(key) {
+  const response = await fetch(`${KV_BASE_URL}/get/${encodeURIComponent(key)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`
+    }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`KV get failed: ${text}`);
   }
 
-  try {
-    const { input_as_text } = req.body || {};
+  const data = await response.json();
+  return data?.result ?? null;
+}
 
-    if (!input_as_text || typeof input_as_text !== "string") {
-      return res.status(400).json({ error: "input_as_text is required" });
+async function runFullWorkflow(input_as_text) {
+  const conversationHistory = [
+    { role: "user", content: [{ type: "input_text", text: input_as_text }] }
+  ];
+
+  const runner = new Runner({
+    traceMetadata: {
+      __trace_source__: "agent-builder",
+      workflow_id: "wf_69dcc027d6cc81908a96f5e3a49cab57034373ed323868d2"
     }
-    const conversationHistory = [
-      { role: "user", content: [{ type: "input_text", text: input_as_text }] }
-    ];
+  });
 
-    const runner = new Runner({
-      traceMetadata: {
-        __trace_source__: "agent-builder",
-        workflow_id: "wf_69dcc027d6cc81908a96f5e3a49cab57034373ed323868d2"
+  const generatorResult = await runner.run(
+    tildWeboldalGenerator,
+    [
+      ...conversationHistory,
+      {
+        role: "user",
+        content: [{ type: "input_text", text: `Forrásdokumentum:${input_as_text}` }]
       }
-    });
+    ]
+  );
 
-    const generatorResult = await runner.run(
-      tildWeboldalGenerator,
-      [
-        ...conversationHistory,
-        {
-          role: "user",
-          content: [{ type: "input_text", text: `Forrásdokumentum:${input_as_text}` }]
-        }
-      ]
-    );
+  conversationHistory.push(...generatorResult.newItems.map((item) => item.rawItem));
 
-    conversationHistory.push(...generatorResult.newItems.map((item) => item.rawItem));
+  if (!generatorResult.finalOutput) {
+    throw new Error("No generator output");
+  }
 
-    if (!generatorResult.finalOutput) {
-  return res.status(500).json({ error: "No generator output" });
+  const refinerResult = await runner.run(
+    tildPublishingRefiner,
+    [
+      ...conversationHistory,
+      {
+        role: "user",
+        content: [{ type: "input_text", text: `Finomítandó tervezet:${generatorResult.finalOutput ?? ""}` }]
+      }
+    ]
+  );
+
+  conversationHistory.push(...refinerResult.newItems.map((item) => item.rawItem));
+
+  if (!refinerResult.finalOutput) {
+    throw new Error("No refiner output");
+  }
+
+  const qcResult = await runner.run(
+    tildPageQc,
+    [
+      ...conversationHistory,
+      {
+        role: "user",
+        content: [{ type: "input_text", text: `Ellenőrizendő oldalváltozat:${refinerResult.finalOutput ?? ""}` }]
+      }
+    ]
+  );
+
+  if (!qcResult.finalOutput) {
+    throw new Error("No QC output");
+  }
+
+  return qcResult.finalOutput;
 }
 
-if (!generatorResult.finalOutput) {
-  return res.status(500).json({ error: "No generator output" });
-}
+export default async function handler(req, res) {
+  try {
+    if (req.method === "GET") {
+      const { job_id } = req.query || {};
 
-return res.status(200).json({
-  elsodleges_oldaltipus: "szolgáltatásoldal",
-  elsodleges_celcsoport: "teszt célcsoport",
-  elsodleges_uzleti_cel: "teszt üzleti cél",
-  fo_allitas: "generator lefutott",
-  meta_title: "generator teszt",
-  meta_description: "generator teszt",
-  h1: "generator teszt",
-  rovid_hero_bevezeto: "generator lefutott",
-  teljes_oldalszoveg: String(generatorResult.finalOutput),
-  fo_cta: "teszt CTA",
-  javasolt_belso_linkek: "teszt linkek"
-});
+      if (!job_id) {
+        return res.status(400).json({ error: "job_id is required" });
+      }
+
+      const stored = await kvGet(`job:${job_id}`);
+
+      if (!stored) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      return res.status(200).json(stored);
+    }
+
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    const { mode = "start", input_as_text, job_id } = req.body || {};
+
+    if (mode === "start") {
+      if (!input_as_text || typeof input_as_text !== "string") {
+        return res.status(400).json({ error: "input_as_text is required" });
+      }
+
+      const newJobId = crypto.randomUUID();
+
+      await kvSet(`job:${newJobId}`, {
+        job_id: newJobId,
+        status: "queued",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      return res.status(200).json({
+        job_id: newJobId,
+        status: "queued"
+      });
+    }
+
+    if (mode === "process") {
+      if (!job_id || typeof job_id !== "string") {
+        return res.status(400).json({ error: "job_id is required" });
+      }
+
+      const stored = await kvGet(`job:${job_id}`);
+
+      if (!stored) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      if (!input_as_text || typeof input_as_text !== "string") {
+        return res.status(400).json({ error: "input_as_text is required" });
+      }
+
+      await kvSet(`job:${job_id}`, {
+        ...stored,
+        status: "processing",
+        updated_at: new Date().toISOString()
+      });
+
+      try {
+        const finalResult = await runFullWorkflow(input_as_text);
+
+        const finalPayload = {
+          job_id,
+          status: "done",
+          updated_at: new Date().toISOString(),
+          result: finalResult
+        };
+
+        await kvSet(`job:${job_id}`, finalPayload);
+
+        return res.status(200).json({
+          job_id,
+          status: "done"
+        });
+      } catch (error) {
+        const failedPayload = {
+          job_id,
+          status: "failed",
+          updated_at: new Date().toISOString(),
+          error: error?.message || "Unknown error"
+        };
+
+        await kvSet(`job:${job_id}`, failedPayload);
+
+        return res.status(500).json(failedPayload);
+      }
+    }
+
+    if (mode === "status") {
+      if (!job_id || typeof job_id !== "string") {
+        return res.status(400).json({ error: "job_id is required" });
+      }
+
+      const stored = await kvGet(`job:${job_id}`);
+
+      if (!stored) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      return res.status(200).json(stored);
+    }
+
+    return res.status(400).json({ error: "Invalid mode" });
   } catch (error) {
     return res.status(500).json({
       error: "Workflow execution failed",
